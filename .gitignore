@@ -1,0 +1,23 @@
+# Python bytecode files
+*.pyc
+*.pyo
+__pycache__/
+
+# Virtual environment directories
+venv/
+env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# IDEs (例如 VSCode)
+.vscode/
+
+# PyCharm
+.idea/
+
+# Other Python artifacts
+*.egg-info/
+dist/
+build/

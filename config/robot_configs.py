@@ -54,3 +54,22 @@ class A1Config(RobotConfig):
     swing_height = 0.1
     Kp_swing = np.diag([700., 700., 700.])
     Kd_swing = np.diag([20., 20., 20.])
+    
+class PFConfig(RobotConfig):
+    mass_base: float = 9.567
+    base_height_des: float = 0.65
+    base_inertia_base: np.ndarray
+    base_inertia_base = make_com_inertial_matrix(
+        ixx=0.136700555,
+        ixy=-0.000114115,
+        ixz=0.029870339,
+        iyy=0.111197923,
+        iyz=0.000177889,
+        izz=0.098252391,
+    )
+    
+    fz_max = 350.
+    
+    swing_height = 0.1
+    Kp_swing = np.diag([40., 40., 40.])
+    Kd_swing = np.diag([2.5, 2.5, 2.5])

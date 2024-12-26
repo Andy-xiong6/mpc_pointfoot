@@ -1,240 +1,298 @@
 import os
 import sys
+import copy
+import numpy as np
+import yaml
+from scipy.spatial.transform import Rotation as R
+from functools import partial
+import limxsdk
+import limxsdk.robot.Rate as Rate
+import limxsdk.robot.Robot as Robot
+import limxsdk.robot.RobotType as RobotType
+import limxsdk.datatypes as datatypes
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '../config'))
-sys.path.append(os.path.join(os.path.dirname(__file__), '../linear_mpc'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '../convex_mpc'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '../utils/'))
 
-import mujoco_py
-from mujoco_py import MjViewer
-import numpy as np
-
-from gait import Gait
-from leg_controller import LegController
-from linear_mpc_configs import LinearMpcConfig
-from mpc import ModelPredictiveController
-from robot_configs import AliengoConfig
-from robot_data import RobotData
 from swing_foot_trajectory_generator import SwingFootTrajectoryGenerator
 
-
-STATE_ESTIMATION = False
-
-def reset(sim, robot_config):
-    sim.reset()
-    # q_pos_init = np.array([
-    #     0, 0, 0.116536,
-    #     1, 0, 0, 0,
-    #     0, 1.16, -2.77,
-    #     0, 1.16, -2.77,
-    #     0, 1.16, -2.77,
-    #     0, 1.16, -2.77
-    # ])
-    q_pos_init = np.array([
-        0, 0, robot_config.base_height_des,
-        1, 0, 0, 0,
-        0, 0.8, -1.6,
-        0, 0.8, -1.6,
-        0, 0.8, -1.6,
-        0, 0.8, -1.6
-    ])
-    
-    q_vel_init = np.array([
-        0, 0, 0, 
-        0, 0, 0,
-        0, 0, 0,
-        0, 0, 0,
-        0, 0, 0,
-        0, 0, 0
-    ])
-    
-    init_state = mujoco_py.cymj.MjSimState(
-        time=0.0, 
-        qpos=q_pos_init, 
-        qvel=q_vel_init, 
-        act=None, 
-        udd_state={}
-    )
-    sim.set_state(init_state)
-
-def get_true_simulation_data(sim):
-    pos_base = sim.data.body_xpos[1]
-    vel_base = sim.data.body_xvelp[1]
-    quat_base = sim.data.sensordata[0:4]
-    omega_base = sim.data.sensordata[4:7]
-    pos_joint = sim.data.sensordata[10:22]
-    vel_joint = sim.data.sensordata[22:34]
-    touch_state = sim.data.sensordata[34:38]
-    pos_foothold = [
-        sim.data.get_geom_xpos('fl_foot'),
-        sim.data.get_geom_xpos('fr_foot'),
-        sim.data.get_geom_xpos('rl_foot'),
-        sim.data.get_geom_xpos('rr_foot')
-    ]
-    vel_foothold = [
-        sim.data.get_geom_xvelp('fl_foot'),
-        sim.data.get_geom_xvelp('fr_foot'),
-        sim.data.get_geom_xvelp('rl_foot'),
-        sim.data.get_geom_xvelp('rr_foot')
-    ]
-    pos_thigh = [
-        sim.data.get_body_xpos("FL_thigh"),
-        sim.data.get_body_xpos("FR_thigh"),
-        sim.data.get_body_xpos("RL_thigh"),
-        sim.data.get_body_xpos("RR_thigh")
-    ]
-
-    true_simulation_data = [
-        pos_base, 
-        vel_base, 
-        quat_base, 
-        omega_base, 
-        pos_joint, 
-        vel_joint, 
-        touch_state, 
-        pos_foothold, 
-        vel_foothold, 
-        pos_thigh
-    ]
-    # print(true_simulation_data)
-    return true_simulation_data
-
-def get_simulated_sensor_data(sim):
-    imu_quat = sim.data.sensordata[0:4]
-    imu_gyro = sim.data.sensordata[4:7]
-    imu_accelerometer = sim.data.sensordata[7:10]
-    pos_joint = sim.data.sensordata[10:22]
-    vel_joint = sim.data.sensordata[22:34]
-    touch_state = sim.data.sensordata[34:38]
-            
-    simulated_sensor_data = [
-        imu_quat, 
-        imu_gyro, 
-        imu_accelerometer, 
-        pos_joint, 
-        vel_joint, 
-        touch_state
-        ]
-    # print(simulated_sensor_data)
-    return simulated_sensor_data
-
-
-def initialize_robot(sim, viewer, robot_config, robot_data):
-    predictive_controller = ModelPredictiveController(LinearMpcConfig, AliengoConfig)
-    leg_controller = LegController(robot_config.Kp_swing, robot_config.Kd_swing)
-    init_gait = Gait.STANDING
-    vel_base_des = [0., 0., 0.]
-    
-    for iter_counter in range(800):
-
-        if not STATE_ESTIMATION:
-            data = get_true_simulation_data(sim)
-        else:
-            data = get_simulated_sensor_data(sim)
-
-        robot_data.update(
-            pos_base=data[0],
-            lin_vel_base=data[1],
-            quat_base=data[2],
-            ang_vel_base=data[3],
-            q=data[4],
-            qdot=data[5]
-        )
-
-        init_gait.set_iteration(predictive_controller.iterations_between_mpc,iter_counter)
-        swing_states = init_gait.get_swing_state()
-        gait_table = init_gait.get_gait_table()
-
-        predictive_controller.update_robot_state(robot_data)
-        contact_forces = predictive_controller.update_mpc_if_needed(
-            iter_counter, vel_base_des, 0., gait_table, solver='drake', debug=False, iter_debug=0)
-
-        torque_cmds = leg_controller.update(robot_data, contact_forces, swing_states)
-        sim.data.ctrl[:] = torque_cmds
-
-        sim.step()
-        viewer.render()
-
-def main():
-    cur_path = os.path.dirname(__file__)
-    mujoco_xml_path = os.path.join(cur_path, '../robot/aliengo/aliengo.xml')
-    model = mujoco_py.load_model_from_path(mujoco_xml_path)
-    sim = mujoco_py.MjSim(model)
-    viewer = MjViewer(sim)
-
-    robot_config = AliengoConfig
-
-    reset(sim, robot_config)
-    sim.step()
-
-    urdf_path = os.path.join(cur_path, '../robot/aliengo/urdf/aliengo.urdf')
-    robot_data = RobotData(urdf_path, state_estimation=STATE_ESTIMATION)
-    # initialize_robot(sim, viewer, robot_config, robot_data)
-
-    predictive_controller = ModelPredictiveController(LinearMpcConfig, AliengoConfig)
-    leg_controller = LegController(robot_config.Kp_swing, robot_config.Kd_swing)
-
-    gait = Gait.TROTTING10
-    swing_foot_trajs = [SwingFootTrajectoryGenerator(leg_idx) for leg_idx in range(4)]
-
-    vel_base_des = np.array([1.2, 0., 0.])
-    yaw_turn_rate_des = 0.
-
-    iter_counter = 0
-
-    while True:
-
-        if not STATE_ESTIMATION:
-            data = get_true_simulation_data(sim)
-        else:
-            data = get_simulated_sensor_data(sim)
-
-        robot_data.update(
-            pos_base=data[0],
-            lin_vel_base=data[1],
-            quat_base=data[2],
-            ang_vel_base=data[3],
-            q=data[4],
-            qdot=data[5]
-        )
-
-        gait.set_iteration(predictive_controller.iterations_between_mpc, iter_counter)
-        swing_states = gait.get_swing_state()
-        gait_table = gait.get_gait_table()
-
-        predictive_controller.update_robot_state(robot_data)
-
-        contact_forces = predictive_controller.update_mpc_if_needed(iter_counter, vel_base_des, 
-            yaw_turn_rate_des, gait_table, solver='drake', debug=False, iter_debug=0) 
-
-        pos_targets_swingfeet = np.zeros((4, 3))
-        vel_targets_swingfeet = np.zeros((4, 3))
-
-        for leg_idx in range(4):
-            if swing_states[leg_idx] > 0:   # leg is in swing state
-                swing_foot_trajs[leg_idx].set_foot_placement(
-                    robot_data, gait, vel_base_des, yaw_turn_rate_des
-                )
-                base_pos_base_swingfoot_des, base_vel_base_swingfoot_des = \
-                    swing_foot_trajs[leg_idx].compute_traj_swingfoot(
-                        robot_data, gait
-                    )
-                pos_targets_swingfeet[leg_idx, :] = base_pos_base_swingfoot_des
-                vel_targets_swingfeet[leg_idx, :] = base_vel_base_swingfoot_des
-
-        torque_cmds = leg_controller.update(robot_data, contact_forces, swing_states, pos_targets_swingfeet, vel_targets_swingfeet)
-        sim.data.ctrl[:] = torque_cmds
-
-        sim.step()
-        viewer.render()
-        iter_counter += 1
-
-
-        if iter_counter == 50000:
-            sim.reset()
-            reset(sim)
-            iter_counter = 0
-            break
-
+class PointfootController:
+    def __init__(self, dir, robot, robot_type):
+        # Initialize robot and type information
+        self.robot = robot
+        self.robot_type = robot_type
         
+        # Load configuration  based on robot type
+        self.config_file = f'{dir}/{self.robot_type}/params.yaml'
+
+        # Load configuration settings from the YAML file
+        self.load_config(self.config_file)
+
+        # Prepare robot command structure with default values for mode, q, dq, tau, Kp, Kd
+        self.robot_cmd = datatypes.RobotCmd()
+        self.robot_cmd.mode = [0. for x in range(0, self.joint_num)]
+        self.robot_cmd.q = [0. for x in range(0, self.joint_num)]
+        self.robot_cmd.dq = [0. for x in range(0, self.joint_num)]
+        self.robot_cmd.tau = [0. for x in range(0, self.joint_num)]
+        self.robot_cmd.Kp = [self.control_cfg['stiffness'] for x in range(0, self.joint_num)]
+        self.robot_cmd.Kd = [self.control_cfg['damping'] for x in range(0, self.joint_num)]
+
+        # Prepare robot state structure
+        self.robot_state = datatypes.RobotState()
+        self.robot_state.tau = [0. for x in range(0, self.joint_num)]
+        self.robot_state.q = [0. for x in range(0, self.joint_num)]
+        self.robot_state.dq = [0. for x in range(0, self.joint_num)]
+        self.robot_state_tmp = copy.deepcopy(self.robot_state)
+
+        # Initialize IMU (Inertial Measurement Unit) data structure
+        self.imu_data = datatypes.ImuData()
+        self.imu_data.quat[0] = 0
+        self.imu_data.quat[1] = 0
+        self.imu_data.quat[2] = 0
+        self.imu_data.quat[3] = 1
+        self.imu_data_tmp = copy.deepcopy(self.imu_data)
+
+        # Set up a callback to receive updated robot state data
+        self.robot_state_callback_partial = partial(self.robot_state_callback)
+        self.robot.subscribeRobotState(self.robot_state_callback_partial)
+
+        # Set up a callback to receive updated IMU data
+        self.imu_data_callback_partial = partial(self.imu_data_callback)
+        self.robot.subscribeImuData(self.imu_data_callback_partial)
+
+        # Set up a callback to receive updated SensorJoy
+        self.sensor_joy_callback_partial = partial(self.sensor_joy_callback)
+        self.robot.subscribeSensorJoy(self.sensor_joy_callback_partial)
+
+    # Load the configuration from a YAML file
+    def load_config(self, config_file):
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Assign configuration parameters to controller variables
+        self.joint_names = config['PointfootCfg']['joint_names']
+        self.init_state = config['PointfootCfg']['init_state']['default_joint_angle']
+        self.stand_duration = config['PointfootCfg']['stand_mode']['stand_duration']
+        self.control_cfg = config['PointfootCfg']['control']
+        self.imu_orientation_offset = np.array(list(config['PointfootCfg']['imu_orientation_offset'].values()))
+        self.user_cmd_cfg = config['PointfootCfg']['user_cmd_scales']
+        self.loop_frequency = config['PointfootCfg']['loop_frequency']
+        
+        # Initialize variables for actions, observations, and commands
+        self.commands = np.zeros(3)  # command to the robot (e.g., velocity, rotation)
+        self.scaled_commands = np.zeros(3)
+        self.base_lin_vel = np.zeros(3)  # base linear velocity
+        self.base_position = np.zeros(3)  # robot base position
+        self.loop_count = 0  # loop iteration count
+        self.stand_percent = 0  # percentage of time the robot has spent in stand mode
+        self.joint_num = len(self.joint_names)  # number of joints
+
+        # Initialize joint angles based on the initial configuration
+        self.init_joint_angles = np.zeros(len(self.joint_names))
+        for i in range(len(self.joint_names)):
+            self.init_joint_angles[i] = self.init_state[self.joint_names[i]]
+        
+        # Set initial mode to "STAND"
+        self.mode = "STAND"
+
+    # Main control loop
+    def run(self):
+        # Initialize default joint angles for standing
+        self.default_joint_angles = np.array([0.0] * len(self.joint_names))
+        self.stand_percent += 1 / (self.stand_duration * self.loop_frequency)
+        self.mode = "STAND"
+        self.loop_count = 0
+
+        # Set the loop rate based on the frequency in the configuration
+        rate = Rate(self.loop_frequency)
+        while True:
+            self.update()
+            rate.sleep()
+
+    # Handle the stand mode for smoothly transitioning the robot into standing
+    def handle_stand_mode(self):
+        if self.stand_percent < 1:
+            for j in range(len(self.joint_names)):
+                # Interpolate between initial and default joint angles during stand mode
+                pos_des = self.default_joint_angles[j] * (1 - self.stand_percent) + self.init_state[self.joint_names[j]] * self.stand_percent
+                self.set_joint_command_aligned(j, pos_des)
+            # Increment the stand percentage over time
+            self.stand_percent += 1 / (self.stand_duration * self.loop_frequency)
+        else:
+            # Switch to walk mode after standing
+            self.mode = "WALK"
+    
+    # Handle the walk mode where the robot moves based on computed actions
+    def handle_walk_mode(self):
+        # Update the temporary robot state and IMU data
+        self.robot_state_tmp = copy.deepcopy(self.robot_state)
+        self.imu_data_tmp = copy.deepcopy(self.imu_data)
+
+        # Iterate over the joints and set commands based on actions
+        joint_pos = np.array(self.robot_state_tmp.q)
+        joint_vel = np.array(self.robot_state_tmp.dq)
+
+        for i in range(len(joint_pos)):
+            # Compute the limits for the action based on joint position and velocity
+            action_min = (joint_pos[i] - self.init_joint_angles[i] +
+                          (self.control_cfg['damping'] * joint_vel[i] - self.control_cfg['user_torque_limit']) /
+                          self.control_cfg['stiffness'])
+            action_max = (joint_pos[i] - self.init_joint_angles[i] +
+                          (self.control_cfg['damping'] * joint_vel[i] + self.control_cfg['user_torque_limit']) /
+                          self.control_cfg['stiffness'])
+
+            # Clip action within limits
+            self.actions[i] = max(action_min / self.control_cfg['action_scale_pos'],
+                                  min(action_max / self.control_cfg['action_scale_pos'], self.actions[i]))
+
+            # Compute the desired joint position and set it
+            pos_des = self.actions[i] * self.control_cfg['action_scale_pos'] + self.init_joint_angles[i]
+            self.set_joint_command(i, pos_des)
+
+            # Save the last action for reference
+            self.last_actions[i] = self.actions[i]
+    
+    def compute_observation(self):
+        # Convert IMU orientation from quaternion to Euler angles (ZYX convention)
+        imu_orientation = np.array(self.imu_data_tmp.quat)
+        q_wi = R.from_quat(imu_orientation).as_euler('zyx')  # Quaternion to Euler ZYX conversion
+        inverse_rot = R.from_euler('zyx', q_wi).inv().as_matrix()  # Get the inverse rotation matrix
+
+        # Project the gravity vector (pointing downwards) into the body frame
+        gravity_vector = np.array([0, 0, -1])  # Gravity in world frame (z-axis down)
+        projected_gravity = np.dot(inverse_rot, gravity_vector)  # Transform gravity into body frame
+
+        # Retrieve base angular velocity from the IMU data
+        base_ang_vel = np.array(self.imu_data_tmp.gyro)
+        # Apply IMU orientation offset correction (using Euler angles)
+        rot = R.from_euler('zyx', self.imu_orientation_offset).as_matrix()  # Rotation matrix for offset correction
+        base_ang_vel = np.dot(rot, base_ang_vel)  # Apply correction to angular velocity
+        projected_gravity = np.dot(rot, projected_gravity)  # Apply correction to projected gravity
+
+        # Retrieve joint positions and velocities from the robot state
+        joint_positions = np.array(self.robot_state_tmp.q)
+        joint_velocities = np.array(self.robot_state_tmp.dq)
+
+        # Retrieve the last actions that were applied to the robot
+        actions = np.array(self.last_actions)
+
+        # Create a command scaler matrix for linear and angular velocities
+        command_scaler = np.diag([
+            self.user_cmd_cfg['lin_vel_x'],  # Scale factor for linear velocity in x direction
+            self.user_cmd_cfg['lin_vel_y'],  # Scale factor for linear velocity in y direction
+            self.user_cmd_cfg['ang_vel_yaw']  # Scale factor for yaw (angular velocity)
+        ])
+
+        # Apply scaling to the command inputs (velocity commands)
+        scaled_commands = np.dot(command_scaler, self.commands)
+
+        # Create the observation vector by concatenating various state variables:
+        # - Base angular velocity (scaled)
+        # - Projected gravity vector
+        # - Joint positions (difference from initial angles, scaled)
+        # - Joint velocities (scaled)
+        # - Last actions applied to the robot
+        # - Scaled command inputs
+        obs = np.concatenate([
+            base_ang_vel * self.obs_scales['ang_vel'],  # Scaled base angular velocity
+            projected_gravity,  # Projected gravity vector in body frame
+            (joint_positions - self.init_joint_angles) * self.obs_scales['dof_pos'],  # Scaled joint positions
+            joint_velocities * self.obs_scales['dof_vel'],  # Scaled joint velocities
+            actions,  # Last actions taken by the robot
+            scaled_commands  # Scaled velocity commands from user input
+        ])
+        
+        # Clip the observation values to within the specified limits for stability
+        self.observations = np.clip(
+            obs, 
+            -self.rl_cfg['clip_scales']['clip_observations'],  # Lower limit for clipping
+            self.rl_cfg['clip_scales']['clip_observations']  # Upper limit for clipping
+        )
+    
+    def set_joint_command(self, joint_index, position):
+        """
+        Sends a command to set a joint to the desired position.
+        Replace this method with actual implementation according to your hardware.
+        
+        Parameters:
+        joint_index (int): The index of the joint to command.
+        position (float): The desired position of the joint.
+        """
+        self.robot_cmd.q[joint_index] = position
+        
+    def update(self):
+        """
+        Updates the robot's state based on the current mode and publishes the robot command.
+        """
+        if self.mode == "STAND":
+            self.handle_stand_mode()
+        elif self.mode == "WALK":
+            self.handle_walk_mode()
+        
+        # Increment the loop count
+        self.loop_count += 1
+
+        # Publish the robot command
+        self.robot.publishRobotCmd(self.robot_cmd)
+        
+    # Callback function for receiving robot command data
+    def robot_state_callback(self, robot_state: datatypes.RobotState):
+        """
+        Callback function to update the robot state from incoming data.
+        
+        Parameters:
+        robot_state (datatypes.RobotState): The current state of the robot.
+        """
+        self.robot_state = robot_state
+
+    # Callback function for receiving imu data
+    def imu_data_callback(self, imu_data: datatypes.ImuData):
+        """
+        Callback function to update IMU data from incoming data.
+        
+        Parameters:
+        imu_data (datatypes.ImuData): The IMU data containing stamp, acceleration, gyro, and quaternion.
+        """
+        self.imu_data.stamp = imu_data.stamp
+        self.imu_data.acc = imu_data.acc
+        self.imu_data.gyro = imu_data.gyro
+        
+        # Rotate quaternion values
+        self.imu_data.quat[0] = imu_data.quat[1]
+        self.imu_data.quat[1] = imu_data.quat[2]
+        self.imu_data.quat[2] = imu_data.quat[3]
+        self.imu_data.quat[3] = imu_data.quat[0]
+
+    # Callback function for receiving sensor joy data
+    def sensor_joy_callback(self, sensor_joy: datatypes.SensorJoy):
+        self.commands[0] = sensor_joy.axes[1] * 0.5
+        self.commands[1] = sensor_joy.axes[0] * 0.5
+        self.commands[2] = sensor_joy.axes[2] * 0.5
+
 if __name__ == '__main__':
-    main()
+    # Get the robot type from the environment variable
+    robot_type = os.getenv("ROBOT_TYPE")
+    
+    # Check if the ROBOT_TYPE environment variable is set, otherwise exit with an error
+    if not robot_type:
+        print("Error: Please set the ROBOT_TYPE using 'export ROBOT_TYPE=<robot_type>'.")
+        sys.exit(1)
+
+    # Create a Robot instance of the specified type
+    robot = Robot(RobotType.PointFoot)
+
+    # Default IP address for the robot
+    robot_ip = "127.0.0.1"
+    
+    # Check if command-line argument is provided for robot IP
+    if len(sys.argv) > 1:
+        robot_ip = sys.argv[1]
+
+    # Initialize the robot with the provided IP address
+    if not robot.init(robot_ip):
+        sys.exit()
+
+    # Create and run the PointfootController
+    controller = PointfootController(f'{os.path.dirname(os.path.abspath(__file__))}/model/pointfoot', robot, robot_type)
+    controller.run()

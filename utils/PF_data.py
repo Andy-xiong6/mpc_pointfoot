@@ -177,8 +177,8 @@ class PFData():
         
     def __compute_base_pos_base_hips(self) -> List[np.ndarray]:
         base_pos_base_hips = []
-        for thigh_idx in range(2):
-            pos_base_hipi = self.pos_thighs[thigh_idx] - self.pos_base
+        for hip_idx in range(2):
+            pos_base_hipi = self.pos_hips[hip_idx] - self.pos_base
             base_pos_base_hipi = self.R_base.T @ pos_base_hipi
             base_pos_base_hips.append(base_pos_base_hipi)
         return base_pos_base_hips
@@ -245,7 +245,7 @@ def test():
               0.06280346,  0.00562435, 0.10597827,
               0.07388069, -0.02180622, 0.15909948],
     )
-
+    
     print(pf_data.base_pos_base_feet)
 
 if __name__ == '__main__':

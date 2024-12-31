@@ -7,10 +7,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pydrake.all import PiecewisePolynomial
 from gait import Gait
-from robot_data import RobotData
+from PF_data import PFData
 
 from linear_mpc_configs import LinearMpcConfig
-from robot_configs import AliengoConfig
+from robot_configs import PFConfig
 
 class SwingFootTrajectoryGenerator():
 
@@ -26,7 +26,7 @@ class SwingFootTrajectoryGenerator():
 
     def __load_parameters(self):
         self.__dt_control = LinearMpcConfig.dt_control
-        self.__swing_height = AliengoConfig.swing_height
+        self.__swing_height = PFConfig.swing_height
         self.__gravity = LinearMpcConfig.gravity
 
     def __set_init_foot_position(self, footpos_init):
@@ -59,14 +59,14 @@ class SwingFootTrajectoryGenerator():
         vel_swingfoot = swing_traj.derivative(1).value(cur_swing_time)
         # acc_swingfoot = swing_traj.derivate(2).value(cur_swing_time)
 
-        # x = np.linspace(start=0., stop=total_swing_time, num=100)
-        # y = [swing_traj.value(xi)[0] for xi in x]
-        # plt.plot(x, y)
-        # plt.show()
+        x = np.linspace(start=0., stop=total_swing_time, num=100)
+        y = [swing_traj.value(xi)[0] for xi in x]
+        plt.plot(x, y)
+        plt.show()
 
         return np.squeeze(pos_swingfoot), np.squeeze(vel_swingfoot)
     
-    def compute_traj_swingfoot(self, robot_data: RobotData, gait: Gait):
+    def compute_traj_swingfoot(self, robot_data: PFData, gait: Gait):
         pos_base = np.array(robot_data.pos_base, dtype=np.float32)
         vel_base = np.array(robot_data.lin_vel_base, dtype=np.float32)
         R_base = robot_data.R_base
@@ -84,7 +84,7 @@ class SwingFootTrajectoryGenerator():
 
     def set_foot_placement(
         self, 
-        robot_data: RobotData, 
+        robot_data: PFData, 
         gait: Gait, 
         base_vel_base_des, 
         yaw_turn_rate_des
@@ -94,7 +94,7 @@ class SwingFootTrajectoryGenerator():
         pos_base = np.array(robot_data.pos_base, dtype=np.float32)
         vel_base = np.array(robot_data.lin_vel_base, dtype=np.float32)
         R_base = robot_data.R_base
-        base_pos_base_thighi = robot_data.base_pos_base_thighs[self.__leg_id]
+        base_pos_base_hipi = robot_data.base_pos_base_hips[self.__leg_id]
 
         total_stance_time = gait.stance_time
         total_swing_time = gait.swing_time
@@ -110,10 +110,10 @@ class SwingFootTrajectoryGenerator():
 
         # foot placement
         RotZ = self.__get_RotZ(yaw_turn_rate_des * 0.5 * total_stance_time)
-        pos_thigh_corrected = RotZ @ base_pos_base_thighi
+        pos_hip_corrected = RotZ @ base_pos_base_hipi
 
         world_footpos_final = pos_base + \
-            R_base @ (pos_thigh_corrected + base_vel_base_des * self.__remaining_swing_time) + \
+            R_base @ (pos_hip_corrected + base_vel_base_des * self.__remaining_swing_time) + \
             0.5 * total_stance_time * vel_base + 0.03 * (vel_base - vel_base_des)
 
         world_footpos_final[0] += (0.5 * pos_base[2] / self.__gravity) * (vel_base[1] * yaw_turn_rate_des)
@@ -142,20 +142,16 @@ class SwingFootTrajectoryGenerator():
 def test_swing_foot_traj():
     robot_path = os.path.join(os.path.dirname(__file__), '../robot/PF441C/urdf/robot.urdf')
 
-    robot_data = RobotData(robot_model=robot_path)
+    robot_data = PFData(robot_model=robot_path)
     robot_data.update(
         pos_base=[0.00727408, 0.00061764, 0.43571295],
         lin_vel_base=[0.0189759 , 0.00054278, 0.02322867],
         quat_base=[9.99951619e-01, -9.13191258e-03,  3.57360542e-03,  7.72221709e-04],
         ang_vel_base=[-0.06964452, -0.01762341, -0.00088601],
         q=[0.00687206, 0.52588717, -1.22975589, 
-           0.02480081, 0.51914926, -1.21463939,
-           0.00892169, 0.51229961, -1.20195572,
-           0.02621839, 0.50635251, -1.18849609],
+           0.02480081, 0.51914926, -1.21463939],
         qdot=[0.06341452, -0.02158136, 0.16191205,
-              0.07448259, -0.04855474, 0.21399941,
-              0.06280346,  0.00562435, 0.10597827,
-              0.07388069, -0.02180622, 0.15909948],
+              0.07448259, -0.04855474, 0.21399941,],
     )
 
     gait = Gait.TROTTING10
@@ -165,11 +161,11 @@ def test_swing_foot_traj():
     test.set_foot_placement(robot_data, gait, np.array([0.5, 0., 0.]), 0.)
     base_pos_swingfoot_des, base_vel_swingfoot_des = test.compute_traj_swingfoot(robot_data, gait)
     print(base_pos_swingfoot_des, base_vel_swingfoot_des)
-
+    
     test1 = SwingFootTrajectoryGenerator(1)
     test1.set_foot_placement(robot_data, gait, np.array([0.5, 0., 0.]), 0.)
     base_pos_swingfoot_des, base_vel_swingfoot_des = test1.compute_traj_swingfoot(robot_data, gait)
     print(base_pos_swingfoot_des, base_vel_swingfoot_des)
-
+    
 if __name__ == '__main__':
     test_swing_foot_traj()
